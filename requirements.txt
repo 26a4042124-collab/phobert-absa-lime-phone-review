@@ -1,0 +1,12 @@
+pandas
+numpy
+scikit-learn
+matplotlib
+torch
+transformers
+datasets
+accelerate
+lime
+streamlit
+openpyxl
+tqdm
