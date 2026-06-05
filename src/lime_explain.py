@@ -1,58 +1,185 @@
-import torch
-import torch.nn.functional as F
 import numpy as np
+import torch
+from pathlib import Path
 from lime.lime_text import LimeTextExplainer
-import sys
-import os
 
-# Ép Python hiểu thư mục hiện tại để import không bị lỗi
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# CHỈ import model và tokenizer, KHÔNG import device nữa để tránh lỗi
-try:
-    from predict import model, tokenizer
-except ImportError:
-    from src.predict import model, tokenizer
+from config import MODEL_DIR, ID2LABEL, LABEL2ID, MAX_LENGTH
 
-# Tự khởi tạo device riêng trực tiếp tại đây!
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-explainer = LimeTextExplainer(class_names=['Tiêu cực', 'Trung tính', 'Tích cực'])
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def predict_proba_for_lime(texts):
-    if model is None or tokenizer is None:
-        return np.zeros((len(texts), 3))
-        
-    all_probs = []
-    batch_size = 16
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i:i+batch_size]
-        
-        inputs = tokenizer(batch_texts, return_tensors="pt", max_length=256, truncation=True, padding=True)
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        
-        with torch.no_grad():
-            outputs = model(**inputs)
-            logits = outputs.logits
-            probs = F.softmax(logits, dim=1)
-            
-        all_probs.append(probs.cpu().numpy())
-        
-    return np.vstack(all_probs)
 
-def get_lime_explanation(comment, aspect):
-    if model is None:
-        return "<div style='padding:20px; background:#ffebee; color:#c62828; border-radius:8px;'><b>Chưa tải được mô hình!</b><br>Vui lòng chạy file huấn luyện (03_train_test.ipynb) để tạo mô hình trước khi dùng LIME.</div>"
-        
-    try:
-        text_to_explain = f"{comment} </s></s> {aspect}"
-        exp = explainer.explain_instance(
-            text_instance=text_to_explain,
-            classifier_fn=predict_proba_for_lime,
-            num_features=10,
-            num_samples=100
+class ABSALimeExplainer:
+    def __init__(self, model_dir=MODEL_DIR):
+        self.model_dir = Path(model_dir)
+
+        if not self.model_dir.exists():
+            raise FileNotFoundError(
+                f"Không tìm thấy model tại {self.model_dir}. "
+                f"Hãy train model trước hoặc copy thư mục models/phobert_absa vào đúng vị trí."
+            )
+
+        print(f"Đang load model từ: {self.model_dir}")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_dir,
+            use_fast=False
         )
-        return exp.as_html()
-    except Exception as e:
-        print(f"Lỗi khi chạy LIME: {e}")
-        return "<div style='color:red;'>Lỗi trong quá trình tạo giải thích LIME.</div>"
+
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            self.model_dir
+        )
+
+        self.model.to(device)
+        self.model.eval()
+
+        self.class_names = [
+            ID2LABEL[0],
+            ID2LABEL[1],
+            ID2LABEL[2]
+        ]
+
+        self.explainer = LimeTextExplainer(
+            class_names=self.class_names
+        )
+
+        print(f"Model và LIME đã load xong. Device: {device}")
+
+    def predict_proba_for_lime(self, texts, fixed_aspect):
+        """
+        Hàm bắt buộc cho LIME.
+
+        LIME sẽ tạo nhiều biến thể của comment.
+        Với mỗi biến thể, ta ghép aspect cố định vào tokenizer.
+        """
+
+        all_probs = []
+
+        for text in texts:
+            encoding = self.tokenizer(
+                str(text),
+                str(fixed_aspect),
+                add_special_tokens=True,
+                max_length=MAX_LENGTH,
+                padding="max_length",
+                truncation=True,
+                return_attention_mask=True,
+                return_token_type_ids=False,
+                return_tensors="pt"
+            )
+
+            input_ids = encoding["input_ids"].to(device)
+            attention_mask = encoding["attention_mask"].to(device)
+
+            with torch.no_grad():
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask
+                )
+
+                probs = torch.softmax(outputs.logits, dim=1)
+
+            all_probs.append(probs.cpu().numpy()[0])
+
+        return np.array(all_probs)
+
+    def predict_one(self, text, aspect):
+        """
+        Dự đoán sentiment trước khi giải thích.
+        """
+
+        probs = self.predict_proba_for_lime([text], aspect)[0]
+        pred_id = int(np.argmax(probs))
+
+        return {
+            "aspect": aspect,
+            "pred_label": ID2LABEL[pred_id],
+            "confidence": float(probs[pred_id]),
+            "prob_negative": float(probs[0]),
+            "prob_neutral": float(probs[1]),
+            "prob_positive": float(probs[2])
+        }
+
+    def explain(self, text, aspect, num_features=10, num_samples=300):
+        """
+        Giải thích dự đoán của model bằng LIME.
+
+        text: bình luận gốc
+        aspect: khía cạnh cần giải thích
+        """
+
+        prediction = self.predict_one(text, aspect)
+        pred_label = prediction["pred_label"]
+        pred_id = LABEL2ID[pred_label]
+
+        explanation = self.explainer.explain_instance(
+            text_instance=str(text),
+            classifier_fn=lambda texts: self.predict_proba_for_lime(
+                texts,
+                fixed_aspect=aspect
+            ),
+            labels=[pred_id],
+            num_features=num_features,
+            num_samples=num_samples
+        )
+
+        lime_result = explanation.as_list(label=pred_id)
+
+        result = {
+            "text": text,
+            "aspect": aspect,
+            "pred_label": pred_label,
+            "confidence": prediction["confidence"],
+            "lime_words": lime_result
+        }
+
+        return result
+
+
+if __name__ == "__main__":
+    explainer = ABSALimeExplainer()
+
+    comment = "Pin dùng ổn nhưng camera chụp đêm hơi tệ, giao hàng nhanh."
+    aspect = "CAMERA"
+
+    result = explainer.explain(
+        text=comment,
+        aspect=aspect,
+        num_features=10,
+        num_samples=300
+    )
+
+    print("\nKẾT QUẢ DỰ ĐOÁN")
+    print("Bình luận:", result["text"])
+    print("Aspect:", result["aspect"])
+    print("Dự đoán:", result["pred_label"])
+    print("Độ tin cậy:", round(result["confidence"], 4))
+
+    print("\nTỪ/CỤM TỪ ẢNH HƯỞNG THEO LIME")
+    for word, weight in result["lime_words"]:
+        print(f"{word}: {weight:.4f}")
+
+if __name__ == "__main__":
+    explainer = ABSALimeExplainer()
+
+    comment = "Pin dùng ổn nhưng camera chụp đêm hơi tệ, giao hàng nhanh."
+    aspect = "BATTERY"
+
+    result = explainer.explain(
+        text=comment,
+        aspect=aspect,
+        num_features=10,
+        num_samples=300
+    )
+
+    print("\nKẾT QUẢ DỰ ĐOÁN:")
+    print("Bình luận:", result["text"])
+    print("Aspect:", result["aspect"])
+    print("Dự đoán:", result["pred_label"])
+    print("Độ tin cậy:", round(result["confidence"], 4))
+
+    print("\nTỪ/CỤM TỪ ẢNH HƯỞNG THEO LIME:")
+    for word, weight in result["lime_words"]:
+        print(f"{word}: {weight:.4f}")
