@@ -137,7 +137,33 @@ class ABSALimeExplainer:
 
         return result
 
+# =================================================================
+# === HÀM NÀY ĐỂ KẾT NỐI VỚI STREAMLIT APP.PY ===
+_global_explainer = None
 
+def get_lime_explanation(text, aspect):
+    global _global_explainer
+    # Load model 1 lần duy nhất để tránh treo máy
+    if _global_explainer is None:
+        _global_explainer = ABSALimeExplainer()
+        
+    # Tính toán dự đoán
+    prediction = _global_explainer.predict_one(text, aspect)
+    pred_label = prediction["pred_label"]
+    pred_id = LABEL2ID.get(pred_label, 0) # Lấy ID của nhãn
+
+    # Chạy LIME
+    explanation = _global_explainer.explainer.explain_instance(
+        text_instance=str(text),
+        classifier_fn=lambda texts: _global_explainer.predict_proba_for_lime(texts, fixed_aspect=aspect),
+        labels=[pred_id],
+        num_features=10,
+        num_samples=300
+    )
+    
+    # Ép LIME xuất ra định dạng HTML để Streamlit hiển thị được
+    return explanation.as_html()
+# =================================================================
 if __name__ == "__main__":
     explainer = ABSALimeExplainer()
 

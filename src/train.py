@@ -5,6 +5,7 @@ import inspect
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
 
 from sklearn.metrics import (
@@ -222,6 +223,19 @@ def save_test_outputs(trainer, test_dataset, test_df):
     for key, value in metrics.items():
         print(f"{key}: {value:.4f}")
 
+class CustomTrainer(Trainer):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        labels = inputs.pop("labels")
+        # Chuyển dữ liệu qua model
+        outputs = model(**inputs)
+        logits = outputs.logits
+        device = model.device
+        class_weights = torch.tensor([1.5, 3.0, 0.5]).to(device) 
+
+        loss_fct = nn.CrossEntropyLoss(weight=class_weights)
+        loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
+        
+        return (loss, outputs) if return_outputs else loss
 
 def train():
     ensure_directories()
@@ -229,7 +243,7 @@ def train():
 
     print("1. Đang tải dữ liệu đã xử lý...")
     train_df, dev_df, test_df = load_processed_data()
-
+    
     print("2. Đang tải PhoBERT tokenizer và model...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)
 
@@ -263,7 +277,7 @@ def train():
     print("4. Đang cấu hình Trainer...")
     training_args = build_training_arguments()
 
-    trainer = Trainer(
+    trainer = CustomTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,

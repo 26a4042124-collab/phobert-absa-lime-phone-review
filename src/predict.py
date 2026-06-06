@@ -5,9 +5,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 from config import MODEL_DIR, ID2LABEL, MAX_LENGTH
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 class ABSAPredictor:
     def __init__(self, model_dir=MODEL_DIR):
@@ -39,7 +37,6 @@ class ABSAPredictor:
         """
         Dự đoán sentiment cho một bình luận và một aspect.
         """
-
         encoding = self.tokenizer(
             str(text),
             str(aspect),
@@ -81,31 +78,31 @@ class ABSAPredictor:
         """
         Dự đoán nhiều aspect cho cùng một bình luận.
         """
-
         results = []
-
         for aspect in aspects:
             result = self.predict(text, aspect)
             results.append(result)
 
         return pd.DataFrame(results)
 
+# =================================================================
+# === HÀM NÀY ĐỂ KẾT NỐI VỚI STREAMLIT APP.PY ===
+_global_predictor = None
+
+def predict_sentiment(text, aspect):
+    global _global_predictor
+    if _global_predictor is None:
+        _global_predictor = ABSAPredictor()
+        
+    result = _global_predictor.predict(text, aspect)
+    return result["pred_label"], result["confidence"] * 100
+# =================================================================
 
 if __name__ == "__main__":
     predictor = ABSAPredictor()
 
     comment = "Pin dùng ổn nhưng camera chụp đêm hơi tệ, giao hàng nhanh."
-
-    aspects = [
-        "GENERAL",
-        "BATTERY",
-        "CAMERA",
-        "SCREEN",
-        "PERFORMANCE",
-        "DESIGN",
-        "PRICE",
-        "SER&ACC"
-    ]
+    aspects = ["GENERAL", "BATTERY", "CAMERA", "SCREEN", "PERFORMANCE", "DESIGN", "PRICE", "SER&ACC"]
 
     result_df = predictor.predict_many_aspects(comment, aspects)
 
@@ -116,4 +113,3 @@ if __name__ == "__main__":
     result_df.to_csv(output_path, index=False, encoding="utf-8-sig")
 
     print(f"\nĐã lưu kết quả tại: {output_path}")
-

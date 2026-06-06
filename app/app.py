@@ -46,9 +46,9 @@ if menu == "1. Dự đoán Đơn lẻ":
                 
                 # Hiển thị kết quả
                 st.subheader("Kết quả dự đoán")
-                if sentiment == "Tích cực":
+                if sentiment == "positive":
                     st.success(f"**{sentiment}** (Độ tin cậy: {confidence:.2f}%)")
-                elif sentiment == "Tiêu cực":
+                elif sentiment == "negative":
                     st.error(f"**{sentiment}** (Độ tin cậy: {confidence:.2f}%)")
                 else:
                     st.info(f"**{sentiment}** (Độ tin cậy: {confidence:.2f}%)")
